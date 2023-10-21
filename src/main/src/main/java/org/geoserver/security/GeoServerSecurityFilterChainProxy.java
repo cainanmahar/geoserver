@@ -205,7 +205,8 @@ public class GeoServerSecurityFilterChainProxy
             securityManager.getAuthenticationCache().removeAll();
 
             proxy = new FilterChainProxy(filterChains);
-            proxy.setFirewall(new DefaultHttpFirewall());
+            DefaultHttpFirewall firewall = new DefaultHttpFirewall();
+            firewall.setAllowUrlEncodedSlash(true);
             proxy.afterPropertiesSet();
             chainsInitialized = true;
         }
