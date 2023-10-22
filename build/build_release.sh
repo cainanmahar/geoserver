@@ -4,6 +4,8 @@
 set -e
 #set -x
 
+tag='9.99.9'
+
 function usage() {
   echo "$0 [options] <tag> <user> <email>"
   echo
@@ -57,100 +59,15 @@ while getopts "hb:r:g:w:" opt; do
   esac 
 done
 
-# clear options to parse main arguments
-shift $(( OPTIND -1 ))
-tag=$1
-git_user=$2
-git_email=$3
-
-# sanity check
-if [ -z $tag ] || [ -z $git_user ] || [ -z $git_email ] || [ ! -z $4 ]; then
-  usage
-  exit 1
-fi
-
 # load properties + functions
 . "$( cd "$( dirname "$0" )" && pwd )"/properties
 . "$( cd "$( dirname "$0" )" && pwd )"/functions
-
-# more sanity checks
-if [ `is_version_num $tag` == "0" ]; then
-  echo "$tag is a not a valid release tag"
-  exit 1
-fi
-if [ `is_primary_branch_num $tag` == "1" ]; then
-  echo "$tag is a not a valid release tag, can't be same as primary branch name"
-  exit 1
-fi
-#checkout branch locally if it doesn't exist
-if ! git show-ref refs/heads/$branch; then 
-  echo "checkout branch #branch locally"
-  git fetch origin $branch:$branch
-fi
-
-# ensure there is a jira release
-jira_id=`get_jira_id $tag`
-if [ -z $jira_id ]; then
-  echo "Could not locate release $tag in JIRA"
-  exit -1
-fi
 
 # move to root of source tree
 pushd .. > /dev/null
 
 dist=`pwd`/distribution/$tag
 mkdir -p $dist/plugins
-
-echo "Building release with following parameters:"
-echo "  branch = $branch"
-echo "  revision = $rev"
-echo "  tag = $tag"
-echo "  geotools = $gt_ver"
-echo "  geowebcache = $gwc_ver"
-echo "  jira id = $jira_id"
-echo "  distribution = $dist"
-echo
-echo "maven/java settings:"
-mvn -version $MAVEN_FLAGS 
-
-echo "maven opts:"
-echo "$MAVEN_OPTS"
-
-echo "maven flags:"
-echo "$MAVEN_FLAGS"
-
-echo "maven localRepository:"
-mvn help:evaluate $MAVEN_FLAGS -Dexpression=settings.localRepository -N --no-transfer-progress -B | grep -v '\[INFO\]'
-
-# clear out any changes
-git reset --hard HEAD
-
-# checkout and update primary branch
-git checkout $branch
-git pull origin $branch
-
-# check to see if a release branch already exists
-if [ `git branch --list rel_$tag | wc -l` == 1 ]; then
-  echo "branch rel_$tag exists, deleting it"
-  git branch -D rel_$tag
-fi
-
-# checkout the branch to release from
-git checkout $branch
-
-# ensure the specified revision actually on this branch
-if [ $rev != "HEAD" ]; then
-  set +e
-  git log | grep $rev
-  if [ $? != 0 ]; then
-     echo "Revision $rev not a revision on branch $branch"
-     exit -1
-  fi
-  set -e
-fi
-
-# create a release branch
-git checkout -b rel_$tag $rev
 
 # setup geotools dependency
 if [ -z $SKIP_GT ]; then
@@ -258,54 +175,17 @@ fi
 # update version numbers
 old_ver=`get_pom_version src/pom.xml`
 
-echo "updating version numbers from $old_ver to $tag"
-find src -name pom.xml -exec sed -i "s/$old_ver/$tag/g" {} \;
-find doc -name conf.py -exec sed -i "s/$old_ver/$tag/g" {} \;
-find doc -name pom.xml -exec sed -i "s/$old_ver/$tag/g" {} \;
-
-pushd src/release > /dev/null
-shopt -s extglob
-# sed -i "s/$old_ver/$tag/g" !(pom).xml installer/win/*.nsi installer/win/*.conf 
-shopt -u extglob
-popd > /dev/null
-
 pushd src > /dev/null
 
 # build the release
 if [ -z $SKIP_BUILD ]; then
   echo "building release"
   mvn clean install $MAVEN_FLAGS -DskipTests -P release
-  
-  # build the javadocs
-  mvn javadoc:aggregate $MAVEN_FLAGS
-
-  ##################
-  # Build the docs
-  ##################
-
-  pushd ../doc/en > /dev/null
-
-  # ant clean user -Dproject.version=$tag
-  # ant user-pdf -Dproject.version=$tag
-  # ant developer -Dproject.version=$tag
-
-  mvn clean compile $MAVEN_FLAGS
-  mvn package $MAVEN_FLAGS
-  
-  popd > /dev/null
 else
    echo "Skipping mvn clean install $MAVEN_FLAGS -DskipTests -P release"
 fi
 
-if [ -z $SKIP_COMMUNITY ]; then
-   pushd community > /dev/null
-   set +e
-   mvn clean install $MAVEN_FLAGS -P communityRelease -DskipTests || true
-   set -e
-   popd > /dev/null
-else
-   echo "Skipping mvn clean install $MAVEN_FLAGS -P communityRelease -DskipTests"
-fi
+echo "Skipping mvn clean install $MAVEN_FLAGS -P communityRelease -DskipTests"
 
 echo "Assemble artifacts"
 mvn assembly:single $MAVEN_FLAGS -N
@@ -322,37 +202,6 @@ pushd release/installer/win > /dev/null
 zip -q -r $artifacts/geoserver-$tag-win.zip *
 popd > /dev/null
 
-pushd $artifacts > /dev/null
-
-htmldoc=geoserver-$tag-htmldoc.zip
-
-if [ -e ../../../doc/en/target/$htmldoc ]; then
-  echo "Using $htmldoc assembly"
-  # use assembly
-  cp ../../../doc/en/target/$htmldoc $htmldoc
-else
-  echo "Creating $htmldoc"
-  # setup doc artifacts
-  if [ -e user ]; then
-    unlink user
-  fi
-  if [ -e developer ]; then
-    unlink developer
-  fi
-  ln -sf ../../../doc/en/target/user/html user
-  ln -sf ../../../doc/en/target/developer/html developer
-  ln -sf ../../../doc/en/release/README.txt readme
-  if [ -e $htmldoc ]; then
-    rm -f $htmldoc 
-  fi
-  zip -q -r $htmldoc user developer readme
-  unlink user
-  unlink developer
-  unlink readme
-fi
-
-popd > /dev/null
-
 # stage distribution artifacts
 echo "copying artifacts to $dist"
 cp $artifacts/*-plugin.zip $dist/plugins
@@ -360,44 +209,8 @@ for a in `ls $artifacts/*.zip | grep -v plugin`; do
   cp $a $dist
 done
 
-cp $artifacts/../../../doc/en/target/user/latex/manual.pdf $dist/geoserver-$tag-user-manual.pdf || true
-
 echo "generated artifacts:"
 ls -la $dist
-
-# git commit changes on the release branch
-pushd .. > /dev/null
-
-init_git $git_user $git_email
-
-git add doc
-git add src
-git commit -m "updating version numbers and release notes for $tag" .
-
-# tag release branch
-if [ -z $SKIP_TAG ]; then
-    # fetch single tag, don't fail if its not there
-    git fetch origin refs/tags/$tag:refs/tags/$tag --no-tags || true
-
-    # check to see if tag already exists
-    if [ `git tag --list $tag | wc -l` == 1 ]; then
-      echo "tag $tag exists, deleting it"
-      git tag -d $tag
-    fi
-
-    if  [ `git ls-remote --refs --tags origin tags/$tag | wc -l` == 1 ]; then
-      echo "tag $tag exists on $GIT_ROOT, deleting it"
-      git push --delete origin $tag
-    fi
-
-    # tag the release branch
-    git tag $tag
-
-    # push up tag
-    git push origin $tag
-fi
-
-popd > /dev/null
 
 popd > /dev/null
 
